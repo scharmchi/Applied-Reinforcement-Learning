@@ -25,7 +25,22 @@ s_list = find_servos(D)
 s1 = Robotis_Servo(D,s_list[0])
 s2 = Robotis_Servo(D,s_list[1])
 
-observation_examples = np.array([np.random.uniform(-1, 1, 2) for x in range(10000)])
+# go to the wheel mode
+s1.init_cont_turn()
+s2.init_cont_turn()
+
+# s1.set_angvel(3)
+# s2.set_angvel(-3)
+# for i in range(600):
+#     print(s1.read_angle(), s2.read_angle())
+#     time.sleep(0.1)
+# s1.set_angvel(0)
+# s2.set_angvel(0)
+# sys.exit(-1)
+
+# state representation is pos1, pos2, direction1, direction2
+# direction 1 means positive vel and -1 os negative velocity (ccw, cw)
+observation_examples = np.array([np.append(np.random.uniform(-2.5, 2.5, 2), np.append(np.random.choice([1, -1]), np.random.choice([1, -1]))) for x in range(10000)])
 # print(observation_examples)
 scaler = sklearn.preprocessing.StandardScaler()
 scaler.fit(observation_examples)
@@ -63,7 +78,6 @@ class PolicyEstimator():
                 activation_fn=None,
                 weights_initializer=tf.zeros_initializer())
             # self.mu = tf.squeeze(self.mu)
-
             self.sigmas = tf.contrib.layers.fully_connected(
                 inputs=tf.expand_dims(self.state, 0),
                 num_outputs=2,
@@ -74,7 +88,7 @@ class PolicyEstimator():
             self.sigmas = tf.nn.softplus(self.sigmas) + 1e-5
             self.normal_dists = tf.contrib.distributions.Normal(self.mus, self.sigmas)
             self.actions = self.normal_dists.sample(1)
-            self.actions = tf.clip_by_value(self.actions, -1, 1)
+            self.actions = tf.clip_by_value(self.actions, -2, 2)
 
             # Loss and train op: here my new loss should not be a vector form, just a single number so do a sum
             self.loss = -tf.reduce_sum(self.normal_dists.log_prob(self.actions) * self.target)
@@ -144,28 +158,29 @@ def actor_critic(estimator_policy, estimator_value, num_episodes, discount_facto
 
     for i_episode in range(num_episodes):
         # first action
-        state = np.array([0, 0])
+        state = np.array([s1.read_angle(), s2.read_angle(), 1, -1])
         episode = []
-
+        print("Move me to the start line")
+        time.sleep(3)
         # One step in the environment
         for t in itertools.count():
-
-            my_target = 0.5
             done = False
             # for some reason the action here looks like [[[ 0.13049328  0.47686869]]]
+
             actions = estimator_policy.predict(state)
-            print(actions)
-            next_state = state
-            next_state[0] = state[0] + actions[0][0][0]
-            next_state[1] = state[1] + actions[0][0][1]
-            if next_state[0] > 1:
-                next_state[0] = 1
-            if next_state[1] > 1:
-                next_state[1] = 1
-            if next_state[0] < -1:
-                next_state[0] = -1
-            if next_state[1] < -1:
-                next_state[1] = -1
+            # print(actions)
+            angvel1 = actions[0][0][0] * 2
+            angvel2 = actions[0][0][1] * 2
+
+            s1.set_angvel(angvel1)
+            s2.set_angvel(angvel2)
+
+            print("angvels", angvel1, angvel2)
+            time.sleep(2)  # wait for 1 seconds which is my fixed period for taking the actions while wheeling
+
+            next_state = np.array([0, 0, 0, 0])
+            next_state[0] = s1.read_angle()
+            next_state[1] = s2.read_angle()
 
             # ======================================================================
             # time to get the reward which means connecting to pi
@@ -200,10 +215,18 @@ def actor_critic(estimator_policy, estimator_value, num_episodes, discount_facto
             print("reward is " + str(reward))
             # reward = -np.abs(next_state[0] - my_target) - np.abs(next_state[1] - my_target)
             #             print(reward)
-            if distance < 5:
+            if distance < 4:
                 done = True
-            s1.move_angle(next_state[0], blocking=False)
-            s2.move_angle(next_state[1])
+
+            # before getting new actions put the previous actions in the current state space to say how we got here
+            if angvel1 < 0:
+                next_state[2] = -1
+            if angvel1 >= 0:
+                next_state[2] = 1
+            if angvel2 < 0:
+                next_state[3] = -1
+            if angvel2 >= 0:
+                next_state[3] = 1
             episode.append(Transition(
                 state=state, action=actions, reward=reward, next_state=next_state, done=done))
 
