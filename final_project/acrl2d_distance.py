@@ -60,7 +60,7 @@ def featurize_state(state):
 # print(featurize_state([0.53, -0.9]))
 
 
-class PolicyEstimator():
+class PolicyEstimator:
     """
     Policy Function approximator.
     """
@@ -68,32 +68,32 @@ class PolicyEstimator():
     def __init__(self, learning_rate=0.01, scope="policy_estimator"):
         with tf.variable_scope(scope):
             self.state = tf.placeholder(tf.float32, [60], "state")
-            self.actions = tf.placeholder(tf.float32, [2], name="actions")
+            self.action = tf.placeholder(tf.float32, [1], name="action")
             self.target = tf.placeholder(dtype=tf.float32, name="target")
 
             # This is just linear classifier
-            self.mus = tf.contrib.layers.fully_connected(
+            self.mu = tf.contrib.layers.fully_connected(
                 inputs=tf.expand_dims(self.state, 0),
-                num_outputs=2,
+                num_outputs=1,
                 activation_fn=None,
                 weights_initializer=tf.zeros_initializer())
             # self.mu = tf.squeeze(self.mu)
-            self.sigmas = tf.contrib.layers.fully_connected(
+            self.sigma = tf.contrib.layers.fully_connected(
                 inputs=tf.expand_dims(self.state, 0),
-                num_outputs=2,
+                num_outputs=1,
                 activation_fn=None,
                 weights_initializer=tf.zeros_initializer())
 
-            # self.sigma = tf.squeeze(self.sigma)
-            self.sigmas = tf.nn.softplus(self.sigmas) + 1e-5
-            self.normal_dists = tf.contrib.distributions.Normal(self.mus, self.sigmas)
-            self.actions = self.normal_dists.sample(1)
-            self.actions = tf.clip_by_value(self.actions, -2, 2)
+            self.sigma = tf.squeeze(self.sigma)
+            self.sigma = tf.nn.softplus(self.sigma) + 1e-5
+            self.normal_dist = tf.contrib.distributions.Normal(self.mu, self.sigma)
+            self.action = self.normal_dist.sample(1)
+            self.action = tf.clip_by_value(self.action, -2, 2)
 
             # Loss and train op: here my new loss should not be a vector form, just a single number so do a sum
-            self.loss = -tf.reduce_sum(self.normal_dists.log_prob(self.actions) * self.target)
+            self.loss = -self.normal_dist.log_prob(self.action) * self.target
             # Add cross entropy cost to encourage exploration
-            self.loss -= tf.reduce_sum(1e-1 * self.normal_dists.entropy())
+            self.loss -= 1e-1 * self.normal_dist.entropy()
 
             self.optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
             self.train_op = self.optimizer.minimize(
@@ -102,17 +102,17 @@ class PolicyEstimator():
     def predict(self, state, sess=None):
         sess = sess or tf.get_default_session()
         state = featurize_state(state)
-        return sess.run(self.actions, {self.state: state})
+        return sess.run(self.action, {self.state: state})
 
-    def update(self, state, target, actions, sess=None):
+    def update(self, state, target, action, sess=None):
         sess = sess or tf.get_default_session()
         state = featurize_state(state)
-        feed_dict = {self.state: state, self.target: target, self.actions: actions}
+        feed_dict = {self.state: state, self.target: target, self.action: action}
         _, loss = sess.run([self.train_op, self.loss], feed_dict)
         return loss
 
 
-class ValueEstimator():
+class ValueEstimator:
     """
     Value Function approximator.
     """
@@ -160,23 +160,31 @@ def actor_critic(estimator_policy, estimator_value, num_episodes, discount_facto
         # first action
         state = np.array([s1.read_angle(), s2.read_angle(), 1, -1])
         episode = []
+        s1.set_angvel(0)
+        s2.set_angvel(0)
+        # fake_distance = 30
         print("Move me to the start line")
-        time.sleep(3)
+        time.sleep(8)
         # One step in the environment
         for t in itertools.count():
             done = False
             # for some reason the action here looks like [[[ 0.13049328  0.47686869]]]
 
-            actions = estimator_policy.predict(state)
+            action = estimator_policy.predict(state)
             # print(actions)
-            angvel1 = actions[0][0][0] * 2
-            angvel2 = actions[0][0][1] * 2
+            print(action, "-----------------------------------------------")
+            if action >= 0:
+                angvel1 = 3
+                angvel2 = -3
+            else:
+                angvel1 = -3
+                angvel2 = 3
 
             s1.set_angvel(angvel1)
             s2.set_angvel(angvel2)
 
             print("angvels", angvel1, angvel2)
-            time.sleep(2)  # wait for 1 seconds which is my fixed period for taking the actions while wheeling
+            time.sleep(3)  # wait for 1 seconds which is my fixed period for taking the actions while wheeling
 
             next_state = np.array([0, 0, 0, 0])
             next_state[0] = s1.read_angle()
@@ -215,7 +223,7 @@ def actor_critic(estimator_policy, estimator_value, num_episodes, discount_facto
             print("reward is " + str(reward))
             # reward = -np.abs(next_state[0] - my_target) - np.abs(next_state[1] - my_target)
             #             print(reward)
-            if distance < 4:
+            if distance < 12:
                 done = True
 
             # before getting new actions put the previous actions in the current state space to say how we got here
@@ -228,7 +236,7 @@ def actor_critic(estimator_policy, estimator_value, num_episodes, discount_facto
             if angvel2 >= 0:
                 next_state[3] = 1
             episode.append(Transition(
-                state=state, action=actions, reward=reward, next_state=next_state, done=done))
+                state=state, action=action, reward=reward, next_state=next_state, done=done))
 
             stats.episode_rewards[i_episode] += reward
             stats.episode_lengths[i_episode] = t
@@ -237,7 +245,7 @@ def actor_critic(estimator_policy, estimator_value, num_episodes, discount_facto
             td_target = reward + discount_factor * value_next
             td_error = td_target - estimator_value.predict(state)
             estimator_value.update(state, td_target)
-            estimator_policy.update(state, td_error, actions)
+            estimator_policy.update(state, td_error, action)
             print("Step {} @ Episode {}/{} ({})".format(
                 t, i_episode + 1, num_episodes, stats.episode_rewards[i_episode - 1]))
 
