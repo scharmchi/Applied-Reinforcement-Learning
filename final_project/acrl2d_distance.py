@@ -13,31 +13,7 @@ import sklearn.preprocessing
 if "../" not in sys.path:
   sys.path.append("../") 
 import plotting
-
-from sklearn.kernel_approximation import RBFSampler
-
 matplotlib.style.use('ggplot')
-
-from lib_robotis_hack import *
-
-# D = USB2Dynamixel_Device(dev_name="/dev/ttyUSB0",baudrate=1000000)
-# s_list = find_servos(D)
-# s1 = Robotis_Servo(D,s_list[0])
-# s2 = Robotis_Servo(D,s_list[1])
-#
-# # go to the wheel mode
-# s1.init_cont_turn()
-# s2.init_cont_turn()
-
-# s1.set_angvel(3)
-# s2.set_angvel(-3)
-# for i in range(600):
-#     print(s1.read_angle(), s2.read_angle())
-#     time.sleep(0.1)
-# s1.set_angvel(0)
-# s2.set_angvel(0)
-# sys.exit(-1)
-
 from lib_robotis_hack import *
 
 D = USB2Dynamixel_Device(dev_name="/dev/ttyUSB1",baudrate=1000000)
@@ -54,9 +30,6 @@ action_space_size = 2  # go left or right
 
 
 class PolicyEstimator():
-    """
-    Policy Function approximator.
-    """
 
     def __init__(self, learning_rate=0.01, scope="policy_estimator"):
         with tf.variable_scope(scope):
@@ -94,9 +67,6 @@ class PolicyEstimator():
 
 
 class ValueEstimator():
-    """
-    Value Function approximator.
-    """
 
     def __init__(self, learning_rate=0.1, scope="value_estimator"):
         with tf.variable_scope(scope):
@@ -130,20 +100,6 @@ class ValueEstimator():
 
 
 def actor_critic(estimator_policy, estimator_value, num_episodes, discount_factor=1.0):
-    """
-    Actor Critic Algorithm. Optimizes the policy
-    function approximator using policy gradient.
-
-    Args:
-        env: OpenAI environment.
-        estimator_policy: Policy Function to be optimized
-        estimator_value: Value function approximator, used as a baseline
-        num_episodes: Number of episodes to run for
-        discount_factor: Time-discount factor
-
-    Returns:
-        An EpisodeStats object with two numpy arrays for episode_lengths and episode_rewards.
-    """
 
     # Keeps track of useful statistics
     stats = plotting.EpisodeStats(
@@ -281,7 +237,7 @@ value_estimator = ValueEstimator()
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
     # Note, due to randomness in the policy the number of episodes you need to learn a good
-    # policy may vary. ~300 seemed to work well for me.
+    # policy may vary.
     stats = actor_critic(policy_estimator, value_estimator, 30)
 
 plotting.plot_episode_stats(stats, smoothing_window=10)
