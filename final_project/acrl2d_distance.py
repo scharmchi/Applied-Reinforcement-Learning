@@ -20,14 +20,14 @@ matplotlib.style.use('ggplot')
 
 from lib_robotis_hack import *
 
-D = USB2Dynamixel_Device(dev_name="/dev/ttyUSB0",baudrate=1000000)
-s_list = find_servos(D)
-s1 = Robotis_Servo(D,s_list[0])
-s2 = Robotis_Servo(D,s_list[1])
-
-# go to the wheel mode
-s1.init_cont_turn()
-s2.init_cont_turn()
+# D = USB2Dynamixel_Device(dev_name="/dev/ttyUSB0",baudrate=1000000)
+# s_list = find_servos(D)
+# s1 = Robotis_Servo(D,s_list[0])
+# s2 = Robotis_Servo(D,s_list[1])
+#
+# # go to the wheel mode
+# s1.init_cont_turn()
+# s2.init_cont_turn()
 
 # s1.set_angvel(3)
 # s2.set_angvel(-3)
@@ -38,62 +38,45 @@ s2.init_cont_turn()
 # s2.set_angvel(0)
 # sys.exit(-1)
 
-# state representation is pos1, pos2, direction1, direction2
-# direction 1 means positive vel and -1 os negative velocity (ccw, cw)
-observation_examples = np.array([np.append(np.random.uniform(-2.5, 2.5, 2), np.append(np.random.choice([1, -1]), np.random.choice([1, -1]))) for x in range(10000)])
-# print(observation_examples)
-scaler = sklearn.preprocessing.StandardScaler()
-scaler.fit(observation_examples)
-featurizer = sklearn.pipeline.FeatureUnion([
-        ("rbf1", RBFSampler(gamma=2.0, n_components=20)),
-        ("rbf2", RBFSampler(gamma=1.0, n_components=20)),
-        ("rbf3", RBFSampler(gamma=0.5, n_components=20))
-        ])
-featurizer.fit(scaler.transform(observation_examples))
+from lib_robotis_hack import *
+
+D = USB2Dynamixel_Device(dev_name="/dev/ttyUSB1",baudrate=1000000)
+s_list = find_servos(D)
+s1 = Robotis_Servo(D,s_list[0])
+s2 = Robotis_Servo(D,s_list[1])
+
+# go to the wheel mode
+s1.init_cont_turn()
+s2.init_cont_turn()
+
+observation_space_size = 20  # tile coding of size 20
+action_space_size = 2  # go left or right
 
 
-def featurize_state(state):
-    scaled = scaler.transform([state])
-    featurized = featurizer.transform(scaled)
-    return featurized[0]
-
-# print(featurize_state([0.53, -0.9]))
-
-
-class PolicyEstimator:
+class PolicyEstimator():
     """
     Policy Function approximator.
     """
 
     def __init__(self, learning_rate=0.01, scope="policy_estimator"):
         with tf.variable_scope(scope):
-            self.state = tf.placeholder(tf.float32, [60], "state")
-            self.action = tf.placeholder(tf.float32, [1], name="action")
+            self.state = tf.placeholder(tf.int32, [], "state")
+            self.action = tf.placeholder(dtype=tf.int32, name="action")
             self.target = tf.placeholder(dtype=tf.float32, name="target")
 
-            # This is just linear classifier
-            self.mu = tf.contrib.layers.fully_connected(
-                inputs=tf.expand_dims(self.state, 0),
-                num_outputs=1,
-                activation_fn=None,
-                weights_initializer=tf.zeros_initializer())
-            # self.mu = tf.squeeze(self.mu)
-            self.sigma = tf.contrib.layers.fully_connected(
-                inputs=tf.expand_dims(self.state, 0),
-                num_outputs=1,
+            # This is just table lookup estimator
+            state_one_hot = tf.one_hot(self.state, int(observation_space_size))
+            self.output_layer = tf.contrib.layers.fully_connected(
+                inputs=tf.expand_dims(state_one_hot, 0),
+                num_outputs=action_space_size,
                 activation_fn=None,
                 weights_initializer=tf.zeros_initializer())
 
-            self.sigma = tf.squeeze(self.sigma)
-            self.sigma = tf.nn.softplus(self.sigma) + 1e-5
-            self.normal_dist = tf.contrib.distributions.Normal(self.mu, self.sigma)
-            self.action = self.normal_dist.sample(1)
-            self.action = tf.clip_by_value(self.action, -2, 2)
+            self.action_probs = tf.squeeze(tf.nn.softmax(self.output_layer))
+            self.picked_action_prob = tf.gather(self.action_probs, self.action)
 
-            # Loss and train op: here my new loss should not be a vector form, just a single number so do a sum
-            self.loss = -self.normal_dist.log_prob(self.action) * self.target
-            # Add cross entropy cost to encourage exploration
-            self.loss -= 1e-1 * self.normal_dist.entropy()
+            # Loss and train op
+            self.loss = -tf.log(self.picked_action_prob) * self.target
 
             self.optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
             self.train_op = self.optimizer.minimize(
@@ -101,30 +84,29 @@ class PolicyEstimator:
 
     def predict(self, state, sess=None):
         sess = sess or tf.get_default_session()
-        state = featurize_state(state)
-        return sess.run(self.action, {self.state: state})
+        return sess.run(self.action_probs, {self.state: state})
 
     def update(self, state, target, action, sess=None):
         sess = sess or tf.get_default_session()
-        state = featurize_state(state)
         feed_dict = {self.state: state, self.target: target, self.action: action}
         _, loss = sess.run([self.train_op, self.loss], feed_dict)
         return loss
 
 
-class ValueEstimator:
+class ValueEstimator():
     """
     Value Function approximator.
     """
 
     def __init__(self, learning_rate=0.1, scope="value_estimator"):
         with tf.variable_scope(scope):
-            self.state = tf.placeholder(tf.float32, [60], "state")
+            self.state = tf.placeholder(tf.int32, [], "state")
             self.target = tf.placeholder(dtype=tf.float32, name="target")
 
-            # This is just linear classifier
+            # This is just table lookup estimator
+            state_one_hot = tf.one_hot(self.state, int(observation_space_size))
             self.output_layer = tf.contrib.layers.fully_connected(
-                inputs=tf.expand_dims(self.state, 0),
+                inputs=tf.expand_dims(state_one_hot, 0),
                 num_outputs=1,
                 activation_fn=None,
                 weights_initializer=tf.zeros_initializer())
@@ -138,69 +120,78 @@ class ValueEstimator:
 
     def predict(self, state, sess=None):
         sess = sess or tf.get_default_session()
-        state = featurize_state(state)
         return sess.run(self.value_estimate, {self.state: state})
 
     def update(self, state, target, sess=None):
         sess = sess or tf.get_default_session()
-        state = featurize_state(state)
         feed_dict = {self.state: state, self.target: target}
         _, loss = sess.run([self.train_op, self.loss], feed_dict)
         return loss
 
 
 def actor_critic(estimator_policy, estimator_value, num_episodes, discount_factor=1.0):
+    """
+    Actor Critic Algorithm. Optimizes the policy
+    function approximator using policy gradient.
+
+    Args:
+        env: OpenAI environment.
+        estimator_policy: Policy Function to be optimized
+        estimator_value: Value function approximator, used as a baseline
+        num_episodes: Number of episodes to run for
+        discount_factor: Time-discount factor
+
+    Returns:
+        An EpisodeStats object with two numpy arrays for episode_lengths and episode_rewards.
+    """
+
+    # Keeps track of useful statistics
     stats = plotting.EpisodeStats(
         episode_lengths=np.zeros(num_episodes),
         episode_rewards=np.zeros(num_episodes))
 
     Transition = collections.namedtuple("Transition", ["state", "action", "reward", "next_state", "done"])
 
+    min_angle = -2.5830872929516078
+    max_angle = 2.5830872929516078
+    angle_range = max_angle - min_angle
     for i_episode in range(num_episodes):
-        # first action
-        state = np.array([s1.read_angle(), s2.read_angle(), 1, -1])
+        # Reset the environment and pick the fisrst action
+        state = int(((s1.read_angle() + max_angle) / angle_range) * 20)
+        distance = 30
+
         episode = []
+
         s1.set_angvel(0)
         s2.set_angvel(0)
         # fake_distance = 30
         print("Move me to the start line")
-        time.sleep(8)
+        time.sleep(10)
+
         # One step in the environment
         for t in itertools.count():
-            done = False
-            # for some reason the action here looks like [[[ 0.13049328  0.47686869]]]
 
-            action = estimator_policy.predict(state)
-            # print(actions)
-            print(action, "-----------------------------------------------")
-            if action >= 0:
-                angvel1 = 3
-                angvel2 = -3
-            else:
-                angvel1 = -3
-                angvel2 = 3
+            # Take a step
+            action_probs = estimator_policy.predict(state)
+            action = np.random.choice(np.arange(len(action_probs)), p=action_probs)
 
-            s1.set_angvel(angvel1)
-            s2.set_angvel(angvel2)
+            if action == 0:
+                s1.set_angvel(3)
+                s2.set_angvel(-3)
+            if action == 1:
+                s1.set_angvel(-3)
+                s2.set_angvel(3)
 
-            print("angvels", angvel1, angvel2)
-            time.sleep(3)  # wait for 1 seconds which is my fixed period for taking the actions while wheeling
-
-            next_state = np.array([0, 0, 0, 0])
-            next_state[0] = s1.read_angle()
-            next_state[1] = s2.read_angle()
+            time.sleep(3)
 
             # ======================================================================
             # time to get the reward which means connecting to pi
             socket_list = [sys.stdin, s]
             # Get the list sockets which are readable
             ready_to_read, ready_to_write, in_error = select.select(socket_list, [], [])
-            # sys.stdin = StringIO.StringIO("\n")
             for sock in ready_to_read:
-                distance = 100
                 if sock == s:
                     # incoming message from remote server, s
-                    # print("getting distance from pi..")
                     data = sock.recv(4096)
                     if not data:
                         print('\nDisconnected from chat server')
@@ -210,52 +201,61 @@ def actor_critic(estimator_policy, estimator_value, num_episodes, discount_facto
                             distance = float(data)
                         except ValueError:
                             print('Not float')
-                        # sys.stdout.write('[Me] ');
-
                 else:
                     # user entered a message
-                    # msg = sys.stdin.readline()
                     msg = "Thanks, I client got " + str(distance)
                     s.send(msg)
-            # print("distance is " + str(distance))
             # ======================================================================
+            # if action == 0:
+            #     distance += 4
+            # if action == 1:
+            #     distance -= 4
             reward = -distance * 10
+            # wtf is wrong with those big numbers
+            if reward < -500:
+                reward = -500
             print("reward is " + str(reward))
-            # reward = -np.abs(next_state[0] - my_target) - np.abs(next_state[1] - my_target)
-            #             print(reward)
+
+            done = False
             if distance < 12:
                 done = True
+                # reward = 1000  # DOES GIVING A HUGE REWARD AT THE END AFFECT ANYTHING??
+                s1.set_angvel(0)
+                s2.set_angvel(0)
 
-            # before getting new actions put the previous actions in the current state space to say how we got here
-            if angvel1 < 0:
-                next_state[2] = -1
-            if angvel1 >= 0:
-                next_state[2] = 1
-            if angvel2 < 0:
-                next_state[3] = -1
-            if angvel2 >= 0:
-                next_state[3] = 1
+            next_state = int(((s1.read_angle() + max_angle) / angle_range) * 20)  # mapping the state to 0-19 for tile coding
+
+            # Keep track of the transition
             episode.append(Transition(
                 state=state, action=action, reward=reward, next_state=next_state, done=done))
 
+            # Update statistics
             stats.episode_rewards[i_episode] += reward
             stats.episode_lengths[i_episode] = t
 
+            # Calculate TD Target
             value_next = estimator_value.predict(next_state)
             td_target = reward + discount_factor * value_next
             td_error = td_target - estimator_value.predict(state)
+
+            # Update the value estimator
             estimator_value.update(state, td_target)
+
+            # Update the policy estimator
+            # using the td error as our advantage estimate
             estimator_policy.update(state, td_error, action)
+
+            # Print out which step we're on, useful for debugging.
             print("Step {} @ Episode {}/{} ({})".format(
                 t, i_episode + 1, num_episodes, stats.episode_rewards[i_episode - 1]))
-
+            if t == 0 and done:
+                done = False
             if done:
                 break
 
             state = next_state
 
     return stats
-
 
 host = "192.168.0.42"
 port = 9009
@@ -275,9 +275,13 @@ print('Connected to remote host. You can start sending messages')
 tf.reset_default_graph()
 
 global_step = tf.Variable(0, name="global_step", trainable=False)
-policy_estimator = PolicyEstimator(learning_rate=0.001)
-value_estimator = ValueEstimator(learning_rate=0.1)
+policy_estimator = PolicyEstimator()
+value_estimator = ValueEstimator()
 
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
-    stats = actor_critic(policy_estimator, value_estimator, 100, discount_factor=0.95)
+    # Note, due to randomness in the policy the number of episodes you need to learn a good
+    # policy may vary. ~300 seemed to work well for me.
+    stats = actor_critic(policy_estimator, value_estimator, 30)
+
+plotting.plot_episode_stats(stats, smoothing_window=10)
